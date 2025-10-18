@@ -13,7 +13,7 @@ with open('peca2baixo.jpg', 'rb') as f:
             data=image_bytes,
             mime_type='image/jpeg',
       ),
-      'Caption this image.'
+      'Descreva esta imagem em detalhes usando o Português do Brasil. Quais modelos de carro sao compativel?'
     ]
 )
 
