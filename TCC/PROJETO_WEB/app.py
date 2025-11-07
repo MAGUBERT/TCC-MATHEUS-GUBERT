@@ -35,53 +35,78 @@ def display_results(analise_data: AnalisePeca, supabase_success: bool):
 
 
 def run_gemini_analysis(uploaded_files):
-    """Envia as imagens para o Gemini e processa a resposta JSON."""
+    """Executa a análise em duas etapas: Busca na Web (PRO) e Estruturação JSON (PRO)."""
     
-    contents_parts = []
-    
+    contents_parts_busca = [] 
+    contents_parts_json = []  
+
     for file in uploaded_files:
-        contents_parts.append(
-            types.Part.from_bytes(
-                data=file.getvalue(),
-                mime_type=file.type,
+        part = types.Part.from_bytes(data=file.getvalue(), mime_type=file.type)
+        contents_parts_busca.append(part)
+        contents_parts_json.append(part)
+        
+    prompt_busca = f"""
+    Analise as {len(uploaded_files)} imagens para identificar o código de peça automotiva (olhe rótulos ou gravações). 
+    Em seguida, **USE A FERRAMENTA DE BUSCA** com o código EXATO que você encontrou para pesquisar a lista MAIS PRECISA de modelos e anos de carro compatíveis e a descrição detalhada da peça. 
+    Retorne o resultado COMPLETO como **TEXTO LIVRE e DETALHADO**. Inclua explicitamente o código de peça, a descrição e a lista de compatibilidade que encontrou. Não use o formato JSON nesta etapa.
+    """
+    contents_parts_busca.append(prompt_busca)
+
+    st.info("🧠 Etapa 1/2: Analisando imagens com Gemini-Pro e pesquisando compatibilidade na Web...")
+    try:
+        response_busca = client.models.generate_content(
+            model='gemini-2.5-pro', 
+            contents=contents_parts_busca,
+            config=types.GenerateContentConfig(
+                tools=[{"google_search": {}}], 
             )
         )
+        busca_result_text = response_busca.text
+        
+        # Opcional: Mostrar o resultado da busca para debug
+        # st.markdown("##### Resultado Bruto da Busca:")
+        # st.code(busca_result_text, language='markdown') 
+        
+    except Exception as e:
+        st.error(f"❌ Erro na Etapa 1 (Busca na Web). Verifique se as imagens são claras e se a API Key está correta: {e}")
+        return None, False
+
+
+    prompt_json = f"""
+    Com base na seguinte análise detalhada e resultados de pesquisa obtidos (que estão abaixo da linha):
     
-    prompt_final = f"""
-    Analise detalhadamente as {len(uploaded_files)} imagens da peça automotiva.
-
-    Instruções Cruciais:
-    1.  **CÓDIGO DE PEÇA:** Procure o número de peça nos rótulos, etiquetas ou gravado na própria peça. Use este código como a principal fonte de identificação, mesmo que não seja o 8631A437.
-    2.  **EXTRAÇÃO DE DADOS:** Descreva a peça e sua função (Item 1).
-    3.  **COMPATIBILIDADE:** Liste modelos e anos de carro compatíveis APENAS se houver alta confiança, citando a fonte (se for pela imagem ou por conhecimento geral).
-    4.  **FORMATO:** Retorne a resposta ESTRITAMENTE no formato JSON, seguindo o esquema definido.
-
-    Foco: Garanta que o código de peça e os modelos listados sejam os mais precisos possíveis com base na evidência visual.
+    --- INFORMAÇÕES BRUTAS DA BUSCA ---
+    {busca_result_text}
+    --- FIM DAS INFORMAÇÕES BRUTAS ---
+    
+    Converta estas informações em um objeto ESTRITAMENTE no formato JSON, seguindo o esquema Pydantic (AnalisePeca).
+    A descrição da peça deve ser o campo 'descricao_peca'.
+    A lista de compatibilidade e códigos deve ser o campo 'compatibilidade_lista'.
+    NÃO use a ferramenta de busca e NUNCA adicione texto fora do JSON.
     """
-    contents_parts.append(prompt_final)
+    contents_parts_json.append(prompt_json)
 
-    with st.spinner("🧠 Analisando imagens com Gemini..."):
-        try:
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=contents_parts,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=AnalisePeca,
-                )
+    st.info("⚙️ Etapa 2/2: Estruturando o resultado (com Gemini-Pro) para o formato JSON...")
+    try:
+        response_json = client.models.generate_content(
+            model='gemini-2.5-pro',
+            contents=contents_parts_json,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=AnalisePeca,
             )
-            json_string = response.text
-            
-            analise_data = AnalisePeca.model_validate_json(json_string)
-            
-            db_success = insert_analysis_data(analise_data)
-            
-            return analise_data, db_success
+        )
+        json_string = response_json.text
 
-        except Exception as e:
-            st.error(f"❌ Erro durante a análise ou processamento: {e}")
-            return None, False
+        analise_data = AnalisePeca.model_validate_json(json_string)
+        db_success = insert_analysis_data(analise_data)
 
+        return analise_data, db_success
+
+    except Exception as e:
+        st.error(f"❌ Erro na Etapa 2 (Estruturação JSON). O JSON retornado pelo modelo PRO pode ser inválido: {e}")
+        st.code(f"JSON retornado (verifique o formato): {json_string}", language='json')
+        return None, False
 st.set_page_config(
     page_title="AutoPart Analyzer com Gemini e Supabase",
     layout="wide"
